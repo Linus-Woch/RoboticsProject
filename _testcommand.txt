@@ -1,4 +1,6 @@
-.venv/bin/mjpython student_templates/mobile_controller.py --human-mode none --steps 1200 --render
+.venv/bin/mjpython student_templates/mobile_controller.py --navigation astar --human-mode none --seed 18 --steps 1200 --render
 
+# --navigation astar enables the obstacle-avoiding planner and the EKF by default.
+# --seed 18 repeats a verified no-person layout. Remove it for a random layout.
 # human-mode in {none, slow, fast} (human mobility)
-# steps sets the maximum number of control steps each run, with each step represeting 0.05 seconds
+# steps sets the maximum number of control steps each run, with each step representing 0.05 seconds
