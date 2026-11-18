@@ -1,0 +1,6 @@
+Time: 5–10 min
+show our thing running
+show how something in the code leads to something we saw
+THEN THEY WILL ASK QUESITONS
+- why did you choose to use this
+- and so on

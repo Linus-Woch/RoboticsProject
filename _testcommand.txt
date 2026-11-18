@@ -1,0 +1,4 @@
+.venv/bin/mjpython student_templates/mobile_controller.py --human-mode none --steps 1200 --render
+
+# human-mode in {none, slow, fast} (human mobility)
+# steps sets the maximum number of control steps each run, with each step represeting 0.05 seconds
