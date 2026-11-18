@@ -1,6 +1,6 @@
 # Project 1 progress log
 
-Each completed milestone gets a dedicated branch and Git worktree. Start the next milestone from the previous verified checkpoint, append its implementation and results to this log, then commit, push, and verify the remote branch. Keep earlier milestone branches available for comparison.
+Start each milestone from the latest `main` in a dedicated branch and Git worktree. Record the implementation and verification results in this log, then commit and push the milestone branch. Merge it into `main` with a separate merge commit, push `main`, and verify that GitHub has both updates. Keep the milestone branches available for browsing each step.
 
 ## Step 1 — Odometry-only baseline
 
