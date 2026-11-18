@@ -253,6 +253,8 @@ def main():
                         help="use raw odometry or correct it with the static LiDAR map")
     parser.add_argument("--navigation", choices=["straight", "astar"], default="straight",
                         help="straight-line baseline or A* waypoint tracking")
+    parser.add_argument("--skip-startup-sweep", action="store_true",
+                        help="start driving without the initial LiDAR sweep (A* comparison mode)")
     parser.add_argument("--seed", type=int, help="seed the course layout and odometry")
     parser.add_argument("--plot-plan", type=Path, help="save the first A* route and the driven trajectory")
     args = parser.parse_args()
@@ -275,7 +277,8 @@ def main():
     if args.localisation == "ekf" or (args.localisation is None and args.navigation == "astar"):
         pose_filter = PoseEKF(LidarMap(env.wall_segments(), env.table_map()))
     if args.navigation == "astar":
-        navigator = GridNavigator(goal_xy, env.wall_segments(), env.table_map())
+        navigator = GridNavigator(goal_xy, env.wall_segments(), env.table_map(),
+                                  startup_sweep=not args.skip_startup_sweep)
     controller = MobileController(goal_xy, pose_filter=pose_filter, navigator=navigator)
     trajectory = [env.true_base_pose()[:2]] if args.plot_plan else []
     monitor = ContactMonitor(env)          # counts the steps in contact with bins / person / tables
@@ -310,6 +313,13 @@ def main():
     print(monitor.report())
     print(f"arm: no joint moved more than {arm_drift:.3f} rad ({np.degrees(arm_drift):.2f} deg) from its starting value")
     evaluate_run(env, goal_xy, monitor)
+    if navigator is not None and navigator.startup_sweep:
+        if navigator.sweep_steps is None:
+            print("Startup LiDAR sweep did not finish within the step budget.")
+        else:
+            print(f"Startup LiDAR sweep: {np.degrees(navigator.sweep_max_yaw - navigator.sweep_min_yaw):.1f} deg, "
+                  f"{0.05 * navigator.sweep_steps:.2f} s, "
+                  f"{navigator.sweep_detections} occupied detection cells before driving")
     if navigator is not None:
         print(f"A* plans found: {navigator.plans}")
     if args.plot_plan:
