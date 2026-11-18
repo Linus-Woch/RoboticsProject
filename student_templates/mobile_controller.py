@@ -13,9 +13,8 @@ success test; this file is where your code goes.
 
 WHAT TO DO
 ----------
-Select raw odometry or the LiDAR-based EKF with `--localisation`.
-`compute_action(obs)` drives straight toward the goal for both options.
-Obstacle avoidance will be added in the path-planning milestone.
+Use `--navigation astar` for occupancy-grid planning and obstacle avoidance.
+This mode uses the LiDAR EKF by default. The straight-line mode is the baseline.
 
 Run this file to try it:
 
@@ -85,6 +84,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from mobile_manip import make_env, ContactMonitor, world_velocity_mps_to_base_command
 from mobile_manip.localisation import LidarMap, PoseEKF
+from mobile_manip.path_planning import GridNavigator, PARK_TOLERANCE_M, PARK_YAW_RAD, plot_navigation
 
 # ---- Robot geometry, in the ROBOT frame (x forward, y left, origin at the base origin) ----
 LIDAR_RING_RADIUS = 0.25        # m: beams start on a ring of this radius
@@ -148,9 +148,10 @@ def plot_lidar(lidar, x, y, yaw, walls=None, ax=None):
 
 
 class MobileController:
-    def __init__(self, goal_xy, pose_filter=None):
+    def __init__(self, goal_xy, pose_filter=None, navigator=None):
         self.goal_xy = np.asarray(goal_xy, dtype=float)
         self.pose_filter = pose_filter
+        self.navigator = navigator
         self._last_observation = None
         self._estimated_pose = None
 
@@ -169,10 +170,11 @@ class MobileController:
     def compute_action(self, obs):
         """Returns the base command [vx, vy, wz] for this step.
 
-        Baseline: drive straight toward the goal at up to 0.3 m/s using the estimated pose.
-        This is the handout's reference controller for comparing later improvements.
+        Use the grid navigator when configured, or drive straight as a baseline.
         """
         pose = self.estimate_pose(obs)
+        if self.navigator is not None:
+            return self.navigator.command(pose, obs["robot0_base_lidar"])
         to_goal = self.goal_xy - pose[:2]
         distance = np.linalg.norm(to_goal)
         # A gain of 1/s slows the base inside 0.3 m and gives zero translation at the goal.
@@ -189,6 +191,9 @@ class MobileController:
         These defaults are the success test of the handout, but evaluated with your estimate
         instead of the true pose; the true pose is only used for the final evaluation. The yaw
         check matters: the manipulation phase starts with the arm facing the task table."""
+        if self.navigator is not None:
+            tolerance = min(tolerance, PARK_TOLERANCE_M)
+            yaw_tolerance = min(yaw_tolerance, PARK_YAW_RAD)
         pose = self.estimate_pose(obs)
         yaw_error = (pose[2] + np.pi) % (2 * np.pi) - np.pi
         return bool(np.linalg.norm(pose[:2] - self.goal_xy) < tolerance and abs(yaw_error) < yaw_tolerance)
@@ -244,21 +249,35 @@ def main():
                         help="save a picture of the last LIDAR scan to plots/lidar_scan.png (uses your pose estimate)")
     parser.add_argument("--log-csv", type=Path,
                         help="save per-step odometry, LiDAR, ground truth, and evaluation metrics")
-    parser.add_argument("--localisation", choices=["odom", "ekf"], default="odom",
+    parser.add_argument("--localisation", choices=["odom", "ekf"],
                         help="use raw odometry or correct it with the static LiDAR map")
+    parser.add_argument("--navigation", choices=["straight", "astar"], default="straight",
+                        help="straight-line baseline or A* waypoint tracking")
+    parser.add_argument("--seed", type=int, help="seed the course layout and odometry")
+    parser.add_argument("--plot-plan", type=Path, help="save the first A* route and the driven trajectory")
     args = parser.parse_args()
+    if args.plot_plan and args.navigation != "astar":
+        parser.error("--plot-plan requires --navigation astar")
+    if args.seed is not None:
+        if not 0 <= args.seed < 2**32:
+            parser.error("--seed must be between 0 and 4294967295")
+        np.random.seed(args.seed)  # The environment's bin sampler uses NumPy's global RNG.
     if args.steps < 1:
         parser.error("--steps must be positive")
 
     env = make_env(task="wipe", mobile_phase=True, human_mode=args.human_mode, has_renderer=args.render,
-                   horizon=max(1500, args.steps + 10))
+                   horizon=max(1500, args.steps + 10), seed=args.seed, odom_seed=args.seed)
     obs = env.reset()
     base_start, base_end = env.robots[0].composite_controller._action_split_indexes["base"]   # entries 7..9
     goal_xy = env.manipulation_base_xy()
     pose_filter = None
-    if args.localisation == "ekf":
+    navigator = None
+    if args.localisation == "ekf" or (args.localisation is None and args.navigation == "astar"):
         pose_filter = PoseEKF(LidarMap(env.wall_segments(), env.table_map()))
-    controller = MobileController(goal_xy=goal_xy, pose_filter=pose_filter)
+    if args.navigation == "astar":
+        navigator = GridNavigator(goal_xy, env.wall_segments(), env.table_map())
+    controller = MobileController(goal_xy, pose_filter=pose_filter, navigator=navigator)
+    trajectory = [env.true_base_pose()[:2]] if args.plot_plan else []
     monitor = ContactMonitor(env)          # counts the steps in contact with bins / person / tables
     arm_start_q = obs["robot0_joint_pos"].copy()      # the arm must stay still: remember where it starts
     arm_drift = 0.0                                   # largest change of any arm joint so far (rad)
@@ -271,6 +290,8 @@ def main():
         action[base_start:base_end] = controller.compute_action(obs)       # [vx, vy, wz]
         obs, reward, done, info = env.step(action)
         monitor.update()
+        if args.plot_plan:
+            trajectory.append(env.true_base_pose()[:2])
         arm_drift = max(arm_drift, float(np.max(np.abs(obs["robot0_joint_pos"] - arm_start_q))))
         if args.log_csv:
             log_rows.append(odometry_log_row(step, env, obs, goal_xy, monitor, arm_drift))
@@ -289,6 +310,10 @@ def main():
     print(monitor.report())
     print(f"arm: no joint moved more than {arm_drift:.3f} rad ({np.degrees(arm_drift):.2f} deg) from its starting value")
     evaluate_run(env, goal_xy, monitor)
+    if navigator is not None:
+        print(f"A* plans found: {navigator.plans}")
+    if args.plot_plan:
+        plot_navigation(navigator, trajectory, args.plot_plan)
     if args.log_csv:
         save_odometry_log(log_rows, args.log_csv)
     if args.plot_lidar:
