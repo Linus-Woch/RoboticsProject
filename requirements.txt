@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Universitat Politècnica de Catalunya (UPC),
+# Barcelona East School of Engineering (EEBE).
+# Robotics Systems MSc course 295II235, 2026-2027.
+# All rights reserved.
+
+# Core simulation stack -- versions pinned deliberately, see INSTALL.md.
+# mujoco==3.3.0 specifically: robosuite 1.5.2's mass-matrix code broke
+# against both older (3.1.x) and much newer (3.14.x, the current default
+# `pip install mujoco` pulls) mujoco builds in our testing. Use exactly this
+# version unless you've separately verified a different one works.
+robosuite==1.5.2
+mujoco==3.3.0
+numpy<2          # robosuite/mujoco 3.3.0 are built against numpy 1.x
+h5py             # not declared by robosuite, but robosuite.utils.camera_utils (used by
+                 # mobile_manip.camera_utils for the pixel->world helpers) imports it
+
+# Only needed if you use controller="WHOLE_BODY_MINK_IK" in make_env(...).
+# Safe to leave installed either way.
+mink
+
+# Used by student_templates/ for plotting/analysis; not
+# required by mobile_manip itself.
+matplotlib
