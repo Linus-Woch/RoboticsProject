@@ -18,6 +18,9 @@ BIN_MARGIN_M = 0.09
 DETECTION_MEMORY_STEPS = 500
 PARK_TOLERANCE_M = 0.025
 PARK_YAW_RAD = np.deg2rad(4)
+SWEEP_EXTRA_RAD = np.deg2rad(4)  # Room for residual heading and sampling error.
+SWEEP_YAW_TOLERANCE_RAD = np.deg2rad(1)
+SWEEP_MAX_COMMAND = 0.35
 
 
 def astar(blocked, start, goal):
@@ -152,7 +155,7 @@ class OccupancyGrid:
 
 
 class GridNavigator:
-    def __init__(self, goal, walls, tables):
+    def __init__(self, goal, walls, tables, *, startup_sweep=True):
         self.goal = np.asarray(goal)
         self.grid = OccupancyGrid(walls, tables, LidarMap(walls, tables))
         self.step = 0
@@ -160,11 +163,25 @@ class GridNavigator:
         self.plans = 0
         self.first_route = None
         self.recent_positions = deque(maxlen=64)
+        self.startup_sweep = startup_sweep
+        self.sweep_start_yaw = None
+        self.sweep_phase = 0
+        self.sweep_min_yaw = 0.0
+        self.sweep_max_yaw = 0.0
+        self.sweep_steps = None
+        self.sweep_detections = 0
 
     def command(self, pose, scan):
         self.step += 1
         start = pose[:2]
         self.grid.update(pose, np.asarray(scan), self.step)
+
+        # The grid assumes a near-zero heading for translation. Collect scans
+        # while turning in place, then settle back at the driving heading.
+        if self.startup_sweep and self.sweep_steps is None:
+            yaw_command = self.sweep_command(pose[2], len(scan))
+            if yaw_command is not None:
+                return np.array([0.0, 0.0, yaw_command])
 
         cell = self.grid.cell(start)
         yaw_command = np.clip(-2.0 * wrap_angle(pose[2]), -1, 1)
@@ -210,6 +227,26 @@ class GridNavigator:
 
         vx, vy = world_velocity_mps_to_base_command(velocity, pose[2])
         return np.array([vx, vy, yaw_command])
+
+    def sweep_command(self, yaw, beam_count):
+        """Return a turn command until the outward sweep and return finish."""
+        if self.sweep_start_yaw is None:
+            self.sweep_start_yaw = yaw
+        swept = wrap_angle(yaw - self.sweep_start_yaw)
+        self.sweep_min_yaw = min(self.sweep_min_yaw, swept)
+        self.sweep_max_yaw = max(self.sweep_max_yaw, swept)
+        half_span = (2 * np.pi / beam_count + SWEEP_EXTRA_RAD) / 2
+        # Sweep symmetrically to limit the arm excursion at either extreme.
+        targets = (-half_span, half_span, -self.sweep_start_yaw)
+        error = wrap_angle(targets[self.sweep_phase] - swept)
+        if abs(error) <= SWEEP_YAW_TOLERANCE_RAD and self.sweep_phase < 2:
+            self.sweep_phase += 1
+            error = wrap_angle(targets[self.sweep_phase] - swept)
+        if abs(error) > SWEEP_YAW_TOLERANCE_RAD:
+            return np.sign(error) * np.clip(3.0 * abs(error), 0.10, SWEEP_MAX_COMMAND)
+        self.sweep_steps = self.step - 1
+        self.sweep_detections = len(self.grid.detections)
+        return None
 
     def retreat_velocity(self, start):
         """Back out slowly if a new detection puts the base in safety padding."""

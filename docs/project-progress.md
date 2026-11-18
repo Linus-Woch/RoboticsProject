@@ -72,3 +72,11 @@ Run from the project root.
 ```
 
 Use `.venv/bin/mjpython` with `--render` to watch on macOS. Omit `--navigation astar` to rerun the straight-line baseline.
+
+## Step 4 — Startup LiDAR sweep
+
+With A* enabled, the robot turns about 13° to either side of its starting heading, collecting scans the entire time, then returns to within 1° of its driving heading before translating. Splitting the sweep across both sides reduces arm joint motion during the turn. The measured angle spans more than the 22.5° between adjacent LiDAR rays, filling the gaps between the initial ray directions. Physical occlusions, objects outside sensor range, and the gap between successive samples still limit what the robot can detect.
+
+The sweep updates the same occupancy grid used while driving. After the first route is planned, scans continue to add foreground detections. A* replans if the current route becomes blocked. Use the saved command in [`_testcommand.txt`](../_testcommand.txt) to watch the sweep. Add `--skip-startup-sweep` to compare against Step 3 or to avoid the joint excursion associated with turning. In the simulator, rotating can shift the reported base position slightly and move the arm joints even with zero translation and arm commands.
+
+**Verification.** All 20 no-person layouts (seeds 1–20) parked inside the distance and yaw limits with zero contacts. The true sweep spanned 24.3–25.4° and the largest gap between sampled azimuths was 1.03°. Median plans found dropped from 13 without the sweep to 4 with it, including the initial plan. The maximum arm joint excursion during the sweep was 7.3°, and the base reference point shifted by up to 4.7 cm as it pivoted. In seed 18, the sweep took 3.65 simulated seconds and the complete run took 27.45 s, versus 14.00 s with the sweep disabled. The earlier view of the bins can lead A* to take a longer route.
