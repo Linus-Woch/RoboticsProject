@@ -13,14 +13,9 @@ success test; this file is where your code goes.
 
 WHAT TO DO
 ----------
-Fill in the two methods of `MobileController` below (search for "TODO"):
-
-  1. `estimate_pose(obs)`: where is the robot? Start by returning the odometry; replace it
-     with something that also uses the LIDAR (for example a filter that compares the LIDAR
-     ranges with the wall map) so the estimate does not drift.
-  2. `compute_action(obs)`: where should it go? Turn your pose estimate and the LIDAR into
-     the base command `[vx, vy, wz]` that drives the robot to `self.goal_xy` while avoiding
-     obstacles, and stops there.
+Select raw odometry or the LiDAR-based EKF with `--localisation`.
+`compute_action(obs)` drives straight toward the goal for both options.
+Obstacle avoidance will be added in the path-planning milestone.
 
 Run this file to try it:
 
@@ -89,6 +84,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from mobile_manip import make_env, ContactMonitor, world_velocity_mps_to_base_command
+from mobile_manip.localisation import LidarMap, PoseEKF
 
 # ---- Robot geometry, in the ROBOT frame (x forward, y left, origin at the base origin) ----
 LIDAR_RING_RADIUS = 0.25        # m: beams start on a ring of this radius
@@ -152,30 +148,28 @@ def plot_lidar(lidar, x, y, yaw, walls=None, ax=None):
 
 
 class MobileController:
-    def __init__(self, goal_xy):
+    def __init__(self, goal_xy, pose_filter=None):
         self.goal_xy = np.asarray(goal_xy, dtype=float)
-        # TODO: put the state of your estimator and planner here (filter covariance, the
-        # previous estimate, a map, a path, a counter for "how long have I been stuck", ...).
+        self.pose_filter = pose_filter
+        self._last_observation = None
+        self._estimated_pose = None
 
     def estimate_pose(self, obs):
-        """Returns your best estimate of [x, y, yaw] in the world frame.
-
-        Baseline: the raw odometry. It drifts: the longer and farther you drive, the worse it
-        gets. Replace it with an estimator that uses obs["robot0_base_lidar"] as a correction,
-        for example by predicting each beam's range from the wall map (`env.wall_segments()`, so
-        pass the map to __init__) and comparing it with what the LIDAR measured. Beams that hit
-        bins, the person or the tables are not in the wall map: they are outliers for such a
-        filter, so you have to reject them.
-
-        NOTE: this method is called several times per control step (by compute_action and by
-        at_goal). If your estimator has state, update it ONCE per step, not once per call.
-        """
-        return np.asarray(obs["robot0_base_odom"], dtype=float)
+        """Return [x, y, yaw] from raw odometry or the LiDAR EKF."""
+        odometry = obs["robot0_base_odom"]
+        if self.pose_filter is None:
+            return np.asarray(odometry, dtype=float)
+        # env.step returns a new observation. Both control and the arrival
+        # check can read the same observation, so process that scan only once.
+        if obs is not self._last_observation:
+            self._estimated_pose = self.pose_filter.update(odometry, obs["robot0_base_lidar"])
+            self._last_observation = obs
+        return self._estimated_pose
 
     def compute_action(self, obs):
         """Returns the base command [vx, vy, wz] for this step.
 
-        Baseline: drive straight toward the goal at up to 0.3 m/s using odometry.
+        Baseline: drive straight toward the goal at up to 0.3 m/s using the estimated pose.
         This is the handout's reference controller for comparing later improvements.
         """
         pose = self.estimate_pose(obs)
@@ -227,6 +221,18 @@ def odometry_log_row(step, env, obs, goal_xy, monitor, arm_drift):
     )
 
 
+def save_odometry_log(log_rows, output):
+    columns = [
+        "step", "time_s", "odom_x_m", "odom_y_m", "odom_yaw_rad",
+        "true_x_m", "true_y_m", "true_yaw_rad", "position_error_m",
+        "heading_error_deg", "goal_distance_m", "contact_steps", "max_arm_drift_rad",
+    ]
+    columns.extend(f"lidar_{beam}_m" for beam in range(len(log_rows[0]) - len(columns)))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savetxt(output, log_rows, delimiter=",", header=",".join(columns), comments="", fmt="%.9g")
+    print(f"odometry trace saved to {output}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run your MobileController in the lab and evaluate it.")
     parser.add_argument("--human-mode", choices=["none", "slow", "fast"], default="none",
@@ -238,6 +244,8 @@ def main():
                         help="save a picture of the last LIDAR scan to plots/lidar_scan.png (uses your pose estimate)")
     parser.add_argument("--log-csv", type=Path,
                         help="save per-step odometry, LiDAR, ground truth, and evaluation metrics")
+    parser.add_argument("--localisation", choices=["odom", "ekf"], default="odom",
+                        help="use raw odometry or correct it with the static LiDAR map")
     args = parser.parse_args()
     if args.steps < 1:
         parser.error("--steps must be positive")
@@ -247,7 +255,10 @@ def main():
     obs = env.reset()
     base_start, base_end = env.robots[0].composite_controller._action_split_indexes["base"]   # entries 7..9
     goal_xy = env.manipulation_base_xy()
-    controller = MobileController(goal_xy=goal_xy)
+    pose_filter = None
+    if args.localisation == "ekf":
+        pose_filter = PoseEKF(LidarMap(env.wall_segments(), env.table_map()))
+    controller = MobileController(goal_xy=goal_xy, pose_filter=pose_filter)
     monitor = ContactMonitor(env)          # counts the steps in contact with bins / person / tables
     arm_start_q = obs["robot0_joint_pos"].copy()      # the arm must stay still: remember where it starts
     arm_drift = 0.0                                   # largest change of any arm joint so far (rad)
@@ -279,15 +290,7 @@ def main():
     print(f"arm: no joint moved more than {arm_drift:.3f} rad ({np.degrees(arm_drift):.2f} deg) from its starting value")
     evaluate_run(env, goal_xy, monitor)
     if args.log_csv:
-        columns = [
-            "step", "time_s", "odom_x_m", "odom_y_m", "odom_yaw_rad",
-            "true_x_m", "true_y_m", "true_yaw_rad", "position_error_m",
-            "heading_error_deg", "goal_distance_m", "contact_steps", "max_arm_drift_rad",
-        ]
-        columns.extend(f"lidar_{beam}_m" for beam in range(len(obs["robot0_base_lidar"])))
-        args.log_csv.parent.mkdir(parents=True, exist_ok=True)
-        np.savetxt(args.log_csv, log_rows, delimiter=",", header=",".join(columns), comments="", fmt="%.9g")
-        print(f"odometry trace saved to {args.log_csv}")
+        save_odometry_log(log_rows, args.log_csv)
     if args.plot_lidar:
         import matplotlib
         matplotlib.use("Agg")
