@@ -53,3 +53,22 @@ python student_templates/mobile_controller.py --localisation ekf --human-mode no
 ## Next milestone — Path planning and avoidance
 
 Use the EKF pose to place LiDAR hits on an occupancy grid and plan a collision-free route with A*. Check the base footprint against obstacles and replan when new detections block the route.
+
+## Step 3 — A* path planning and bin avoidance
+
+**Scope.** Navigate the randomized no-person course using the Step 2 EKF, the static map, and live LiDAR. Simulator ground truth is used to score runs and draw the driven path.
+
+- **Map.** Divide the arena into 5 cm cells. Compare each measured LiDAR range with the predicted range to a wall or table skirt. Remember unexplained foreground hits for up to 500 steps (25 simulated seconds), so a bin stays on the map when it disappears between beams. Check the distance from a hit to mapped surfaces as well. This prevents small pose errors near a table corner from creating a false obstacle.
+- **Clearance.** Expand obstacles into the positions where placing the base origin would cause the offset rectangular chassis to overlap them. Allow for the folded arm in the wall clearance and for the shoulder beside tabletops. Apply 9 cm of bin clearance plus a grid-cell allowance to the estimated 8 cm bin half-size.
+- **Planning and tracking.** A* explores the grid with eight possible moves and a straight-line estimate of remaining distance. Diagonals cannot cross blocked corners. The robot follows visible waypoints and replans if the remaining route is blocked. If a late detection puts the base inside a bin’s safety padding, it can retreat slowly toward a recently traversed position. The retreat keeps the mapped wall and table clearance, checks the bin footprint with a smaller margin, and stops when no checked retreat is available. Travel speed is capped at 0.26 m/s and falls as the robot approaches its final target. The controller aims for 2.5 cm and 4° in its estimated pose to leave room for localisation error in the scored parking test.
+- **Verification.** A small grid check confirmed that A* goes around a barrier, respects diagonal clearance, and reports when a goal is disconnected. The [example route plot](results/03-astar-route.png) shows the initial plan and the driven path after replanning.
+
+**Results.** All 20 runs on the final code (seeds 1–20, no pedestrian, 1,000-step limit) parked without contact. Final distance was 1.3–2.6 cm, maximum absolute yaw was 0.2°, and travel took 11.85–25.45 simulated seconds (median 12.53 s). The pedestrian scenarios will need separate testing and shorter memory for moving detections.
+
+Run from the project root.
+
+```bash
+.venv/bin/python student_templates/mobile_controller.py --navigation astar --human-mode none --seed 18 --steps 1000 --plot-plan plots/astar-route.png
+```
+
+Use `.venv/bin/mjpython` with `--render` to watch on macOS. Omit `--navigation astar` to rerun the straight-line baseline.
