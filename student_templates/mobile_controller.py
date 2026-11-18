@@ -24,7 +24,7 @@ Fill in the two methods of `MobileController` below (search for "TODO"):
 
 Run this file to try it:
 
-    python student_templates/mobile_controller.py --human-mode slow
+    python student_templates/mobile_controller.py --human-mode none --steps 400 --log-csv plots/odometry_baseline.csv
     python student_templates/mobile_controller.py --human-mode fast --render    # watch it
 
 At the end it prints the success test of the handout (distance to the goal, yaw, contact steps).
@@ -82,6 +82,7 @@ DRIVING THE BASE  (this is not what it looks like: read it once)
 import argparse
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -159,7 +160,7 @@ class MobileController:
     def estimate_pose(self, obs):
         """Returns your best estimate of [x, y, yaw] in the world frame.
 
-        Placeholder: the raw odometry. It drifts: the longer and farther you drive, the worse it
+        Baseline: the raw odometry. It drifts: the longer and farther you drive, the worse it
         gets. Replace it with an estimator that uses obs["robot0_base_lidar"] as a correction,
         for example by predicting each beam's range from the wall map (`env.wall_segments()`, so
         pass the map to __init__) and comparing it with what the LIDAR measured. Beams that hit
@@ -174,21 +175,18 @@ class MobileController:
     def compute_action(self, obs):
         """Returns the base command [vx, vy, wz] for this step.
 
-        Placeholder: does nothing (the robot stays where it is). Replace it with your navigation
-        and avoidance. A direct drive to the goal looks like this and runs into a bin (it is the
-        baseline the handout describes):
-
-            x, y, yaw = self.estimate_pose(obs)
-            to_goal = self.goal_xy - np.array([x, y])
-            v_world = 0.3 * to_goal / (np.linalg.norm(to_goal) + 1e-6)   # m/s, world frame
-            vx, vy = world_velocity_mps_to_base_command(v_world, yaw)    # see the module docstring
-            wz = -1.0 * yaw                                              # hold the yaw near 0
-            return np.array([vx, vy, wz])
+        Baseline: drive straight toward the goal at up to 0.3 m/s using odometry.
+        This is the handout's reference controller for comparing later improvements.
         """
         pose = self.estimate_pose(obs)
-        lidar = obs["robot0_base_lidar"]
-        # TODO: use `pose` and `lidar` (and whatever maps you keep) to compute [vx, vy, wz]
-        return np.zeros(3)
+        to_goal = self.goal_xy - pose[:2]
+        distance = np.linalg.norm(to_goal)
+        # A gain of 1/s slows the base inside 0.3 m and gives zero translation at the goal.
+        v_world = to_goal * (0.3 / max(distance, 0.3))
+        vx, vy = world_velocity_mps_to_base_command(v_world, pose[2])
+        yaw_error = (pose[2] + np.pi) % (2 * np.pi) - np.pi
+        wz = np.clip(-yaw_error, -1.0, 1.0)
+        return np.array([vx, vy, wz])
 
     def at_goal(self, obs, tolerance=0.05, yaw_tolerance=np.radians(10.0)):
         """True when, according to YOUR estimate, the robot is within `tolerance` metres of the goal
@@ -216,6 +214,19 @@ def evaluate_run(env, goal_xy, monitor):
     return success
 
 
+def odometry_log_row(step, env, obs, goal_xy, monitor, arm_drift):
+    """Capture one observation and its ground truth for offline evaluation."""
+    odom = obs["robot0_base_odom"]
+    truth = env.true_base_pose()
+    yaw_error = (odom[2] - truth[2] + np.pi) % (2 * np.pi) - np.pi
+    return (
+        step, 0.05 * step, *odom, *truth,
+        np.linalg.norm(odom[:2] - truth[:2]), abs(np.degrees(yaw_error)),
+        np.linalg.norm(truth[:2] - goal_xy), monitor.total_steps(), arm_drift,
+        *obs["robot0_base_lidar"],
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run your MobileController in the lab and evaluate it.")
     parser.add_argument("--human-mode", choices=["none", "slow", "fast"], default="none",
@@ -225,7 +236,11 @@ def main():
     parser.add_argument("--render", action="store_true", help="open a window (slower; for debugging)")
     parser.add_argument("--plot-lidar", action="store_true",
                         help="save a picture of the last LIDAR scan to plots/lidar_scan.png (uses your pose estimate)")
+    parser.add_argument("--log-csv", type=Path,
+                        help="save per-step odometry, LiDAR, ground truth, and evaluation metrics")
     args = parser.parse_args()
+    if args.steps < 1:
+        parser.error("--steps must be positive")
 
     env = make_env(task="wipe", mobile_phase=True, human_mode=args.human_mode, has_renderer=args.render,
                    horizon=max(1500, args.steps + 10))
@@ -236,27 +251,43 @@ def main():
     monitor = ContactMonitor(env)          # counts the steps in contact with bins / person / tables
     arm_start_q = obs["robot0_joint_pos"].copy()      # the arm must stay still: remember where it starts
     arm_drift = 0.0                                   # largest change of any arm joint so far (rad)
+    log_rows = []
+    if args.log_csv:
+        log_rows.append(odometry_log_row(0, env, obs, goal_xy, monitor, arm_drift))
 
-    for t in range(args.steps):
+    for step in range(1, args.steps + 1):
         action = np.zeros(env.action_dim)                                  # arm and torso stay at 0
         action[base_start:base_end] = controller.compute_action(obs)       # [vx, vy, wz]
         obs, reward, done, info = env.step(action)
         monitor.update()
         arm_drift = max(arm_drift, float(np.max(np.abs(obs["robot0_joint_pos"] - arm_start_q))))
+        if args.log_csv:
+            log_rows.append(odometry_log_row(step, env, obs, goal_xy, monitor, arm_drift))
         if args.render:
             env.render()
         if controller.at_goal(obs):
-            print(f"arrived (by your estimate) at step {t} = {0.05 * t:.1f} s")
+            print(f"arrived (by your estimate) at step {step} = {0.05 * step:.2f} s")
             break
         if done:
             break
 
     est, true = controller.estimate_pose(obs), env.true_base_pose()
+    print(f"run ended after {step} steps ({0.05 * step:.2f} s simulated)")
     print(f"estimated pose {np.round(est, 3)}   true pose {np.round(true, 3)}   "
           f"localisation error {np.linalg.norm(est[:2] - true[:2]):.3f} m")
     print(monitor.report())
     print(f"arm: no joint moved more than {arm_drift:.3f} rad ({np.degrees(arm_drift):.2f} deg) from its starting value")
     evaluate_run(env, goal_xy, monitor)
+    if args.log_csv:
+        columns = [
+            "step", "time_s", "odom_x_m", "odom_y_m", "odom_yaw_rad",
+            "true_x_m", "true_y_m", "true_yaw_rad", "position_error_m",
+            "heading_error_deg", "goal_distance_m", "contact_steps", "max_arm_drift_rad",
+        ]
+        columns.extend(f"lidar_{beam}_m" for beam in range(len(obs["robot0_base_lidar"])))
+        args.log_csv.parent.mkdir(parents=True, exist_ok=True)
+        np.savetxt(args.log_csv, log_rows, delimiter=",", header=",".join(columns), comments="", fmt="%.9g")
+        print(f"odometry trace saved to {args.log_csv}")
     if args.plot_lidar:
         import matplotlib
         matplotlib.use("Agg")
