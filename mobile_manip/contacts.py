@@ -67,6 +67,7 @@ class ContactMonitor:
         self._t = 0
         self._last_seen = {}
         self._geom_cache = {}
+        self.steps_with_contact = 0         # one count per control step, regardless of pairs
         self.steps = {}                     # (part, other) -> number of steps in contact
         self.episodes = []                  # dicts: t, part, other, xy
 
@@ -87,6 +88,7 @@ class ContactMonitor:
                 other = self._classify(other_geom)[1]
                 if part and other:
                     seen.setdefault((part, other), c.pos[:2].copy())
+        self.steps_with_contact += bool(seen)
         for key, xy in seen.items():
             self.steps[key] = self.steps.get(key, 0) + 1
             if self._t - self._last_seen.get(key, -10**9) > self._episode_gap:
