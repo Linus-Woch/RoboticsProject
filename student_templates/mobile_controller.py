@@ -205,11 +205,11 @@ def evaluate_run(env, goal_xy, monitor):
     x, y, yaw = env.true_base_pose()
     dist = float(np.linalg.norm(np.array([x, y]) - goal_xy))
     yaw_deg = float(np.degrees((yaw + np.pi) % (2 * np.pi) - np.pi))
-    contact_steps = monitor.total_steps()
+    contact_steps = monitor.steps_with_contact
     success = dist < 0.05 and abs(yaw_deg) < 10.0 and contact_steps == 0
     print(f"distance to the goal: {dist:.3f} m (needs < 0.05)   yaw: {yaw_deg:.1f} deg (needs |yaw| < 10)   "
           f"steps in contact: {contact_steps} (needs 0)")
-    print("SUCCESS" if success else "not a success (yet)")
+    print("SUCCESS" if success else "FAILURE")
     return success
 
 
@@ -280,7 +280,12 @@ def main():
         navigator = GridNavigator(goal_xy, env.wall_segments(), env.table_map(),
                                   startup_sweep=not args.skip_startup_sweep)
     controller = MobileController(goal_xy, pose_filter=pose_filter, navigator=navigator)
-    trajectory = [env.true_base_pose()[:2]] if args.plot_plan else []
+    start_pose = env.true_base_pose()
+    previous_pose = start_pose
+    trajectory = [start_pose[:2]] if args.plot_plan else []
+    distance_travelled = 0.0
+    closest_to_goal = np.linalg.norm(start_pose[:2] - goal_xy)
+    stop_reason = "Step limit reached"
     monitor = ContactMonitor(env)          # counts the steps in contact with bins / person / tables
     arm_start_q = obs["robot0_joint_pos"].copy()      # the arm must stay still: remember where it starts
     arm_drift = 0.0                                   # largest change of any arm joint so far (rad)
@@ -293,26 +298,43 @@ def main():
         action[base_start:base_end] = controller.compute_action(obs)       # [vx, vy, wz]
         obs, reward, done, info = env.step(action)
         monitor.update()
+        true_pose = env.true_base_pose()
+        distance_travelled += np.linalg.norm(true_pose[:2] - previous_pose[:2])
+        previous_pose = true_pose
+        closest_to_goal = min(closest_to_goal, np.linalg.norm(true_pose[:2] - goal_xy))
         if args.plot_plan:
-            trajectory.append(env.true_base_pose()[:2])
+            trajectory.append(true_pose[:2])
         arm_drift = max(arm_drift, float(np.max(np.abs(obs["robot0_joint_pos"] - arm_start_q))))
         if args.log_csv:
             log_rows.append(odometry_log_row(step, env, obs, goal_xy, monitor, arm_drift))
         if args.render:
             env.render()
         if controller.at_goal(obs):
-            print(f"arrived (by your estimate) at step {step} = {0.05 * step:.2f} s")
+            stop_reason = "Controller reached its estimated goal"
             break
         if done:
+            stop_reason = "Simulator ended the episode"
             break
 
-    est, true = controller.estimate_pose(obs), env.true_base_pose()
-    print(f"run ended after {step} steps ({0.05 * step:.2f} s simulated)")
-    print(f"estimated pose {np.round(est, 3)}   true pose {np.round(true, 3)}   "
-          f"localisation error {np.linalg.norm(est[:2] - true[:2]):.3f} m")
-    print(monitor.report())
-    print(f"arm: no joint moved more than {arm_drift:.3f} rad ({np.degrees(arm_drift):.2f} deg) from its starting value")
+    est, true = controller.estimate_pose(obs), previous_pose
+    duration = 0.05 * step
+    print("\n--- Navigation run statistics ---")
+    seed = args.seed if args.seed is not None else "random"
+    localisation = "EKF" if pose_filter is not None else "odometry"
+    print(f"Mode: {args.human_mode} | Seed: {seed} | Controller: {args.navigation} + {localisation}")
     evaluate_run(env, goal_xy, monitor)
+    print(f"Stop reason: {stop_reason}")
+    print(f"Elapsed simulation time: {duration:.2f} s ({step}/{args.steps} steps)")
+    print(f"Distance travelled: {distance_travelled:.3f} m "
+          f"(average speed: {distance_travelled / duration:.3f} m/s)")
+    print(f"Closest approach: {closest_to_goal:.3f} m")
+    print(f"Final position: {np.round(true[:2], 3)} m | Goal: {np.round(goal_xy, 3)} m")
+    print(f"Contact episodes: {len(monitor.episodes)}")
+    print(monitor.report())
+    yaw_error = (est[2] - true[2] + np.pi) % (2 * np.pi) - np.pi
+    print(f"Final localisation error: {np.linalg.norm(est[:2] - true[:2]):.3f} m, "
+          f"{abs(np.degrees(yaw_error)):.2f} deg")
+    print(f"Maximum arm-joint movement: {np.degrees(arm_drift):.2f} deg")
     if navigator is not None and navigator.startup_sweep:
         if navigator.sweep_steps is None:
             print("Startup LiDAR sweep did not finish within the step budget.")

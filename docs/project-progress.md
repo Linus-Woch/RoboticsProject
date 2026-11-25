@@ -84,3 +84,9 @@ The sweep updates the same occupancy grid used while driving. After the first ro
 ## Next milestone — Pedestrian avoidance
 
 Extend A* navigation to the moving-person scenarios and validate it in the slow and fast modes.
+
+## Run statistics
+
+The mobile controller prints a summary after every run, including the scored result, why it stopped, final and closest goal distances, final yaw, elapsed simulation time, path length, average speed, and localisation error. Path length adds the distance between successive measured base positions, including any displacement during the startup turn. The summary also shows arm-joint movement and, when applicable, sweep and A* planning statistics.
+
+One contact episode groups nearby reports for the same robot part and obstacle category. The console also reports the number of control steps with any contact and a breakdown by pair. Existing CSV traces retain their counts summed over pairs.
