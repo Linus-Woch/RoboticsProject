@@ -90,3 +90,7 @@ Extend A* navigation to the moving-person scenarios and validate it in the slow 
 The mobile controller prints a summary after every run, including the scored result, why it stopped, final and closest goal distances, final yaw, elapsed simulation time, path length, average speed, and localisation error. Path length adds the distance between successive measured base positions, including any displacement during the startup turn. The summary also shows arm-joint movement and, when applicable, sweep and A* planning statistics.
 
 One contact episode groups nearby reports for the same robot part and obstacle category. The console also reports the number of control steps with any contact and a breakdown by pair. Existing CSV traces retain their counts summed over pairs.
+
+### Scalar navigation cost
+
+The end-of-run summary prints the cost from the Track 1 example in Sections 4.4 and 6.2, (J = T + 0.5 N_{contact} + 10 d_{final}). (T) is elapsed simulated time in seconds, (N_{contact}) is `ContactMonitor.total_steps()` summed over robot-part and obstacle-category pairs, and (d_{final}) is true final distance to the goal in metres. For a run that fails to arrive, use its elapsed time at termination and read the cost alongside the pass/fail result. We use the handout's example weights as defaults. They add 0.5 cost units per contact pair-step and one unit for every 10 cm of final position error.

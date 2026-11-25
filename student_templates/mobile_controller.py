@@ -199,6 +199,11 @@ class MobileController:
         return bool(np.linalg.norm(pose[:2] - self.goal_xy) < tolerance and abs(yaw_error) < yaw_tolerance)
 
 
+# Track 1 handout, Section 6.2 example weights.
+CONTACT_COST_PER_STEP = 0.5
+FINAL_DISTANCE_COST_PER_METRE = 10.0
+
+
 def evaluate_run(env, goal_xy, monitor):
     """The Track 1 success test of the handout, computed with the TRUE pose (allowed here: this is
     the evaluation, not the controller). Prints the numbers and returns True for a success."""
@@ -325,6 +330,15 @@ def main():
     evaluate_run(env, goal_xy, monitor)
     print(f"Stop reason: {stop_reason}")
     print(f"Elapsed simulation time: {duration:.2f} s ({step}/{args.steps} steps)")
+    final_distance = np.linalg.norm(true[:2] - goal_xy)
+    # Use the handout's pair-summed contact steps, including simultaneous contacts.
+    contact_steps = monitor.total_steps()
+    contact_cost = CONTACT_COST_PER_STEP * contact_steps
+    distance_cost = FINAL_DISTANCE_COST_PER_METRE * final_distance
+    print(f"Scalar cost J (lower is better): {duration + contact_cost + distance_cost:.3f}")
+    print(f"  Time: {duration:.3f} | Contacts: {contact_cost:.3f} "
+          f"({CONTACT_COST_PER_STEP:g} × {contact_steps} pair-steps) | "
+          f"Final distance: {distance_cost:.3f} ({FINAL_DISTANCE_COST_PER_METRE:g} × {final_distance:.4f} m)")
     print(f"Distance travelled: {distance_travelled:.3f} m "
           f"(average speed: {distance_travelled / duration:.3f} m/s)")
     print(f"Closest approach: {closest_to_goal:.3f} m")
